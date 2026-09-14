@@ -189,10 +189,23 @@ const createUserRecord = async (payload) => {
 const deleteUserRecord = async (userId) => {
   if (mongoReady) {
     await User.findByIdAndDelete(userId);
+    await FriendRequest.deleteMany({
+      $or: [
+        { senderId: userId },
+        { receiverId: userId }
+      ]
+    });
     return;
   }
 
   memoryUsers.delete(String(userId));
+
+  for (let index = memoryFriendRequests.length - 1; index >= 0; index -= 1) {
+    const request = memoryFriendRequests[index];
+    if (String(request.senderId) === String(userId) || String(request.receiverId) === String(userId)) {
+      memoryFriendRequests.splice(index, 1);
+    }
+  }
 };
 
 const setMemoryPresence = async (userId, online) => {
