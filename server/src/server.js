@@ -946,6 +946,18 @@ io.on('connection', (socket) => {
     });
   });
 
+  socket.on('call:connected', ({ receiverId, callId }) => {
+    if (!receiverId) return;
+
+    const receiverSocketId = onlineUsers.get(String(receiverId))?.socketId;
+    if (!receiverSocketId) return;
+
+    io.to(receiverSocketId).emit('call:connected', {
+      fromUserId: userId,
+      callId
+    });
+  });
+
   socket.on('call:hangup', ({ receiverId, callId }) => {
     if (!receiverId) return;
 
