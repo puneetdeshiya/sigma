@@ -82,14 +82,19 @@ function App() {
   });
   const [localStream, setLocalStream] = useState(null);
   const [remoteStream, setRemoteStream] = useState(null);
+  const pendingIceCandidatesRef = useRef([]);
   const socketRef = useRef(null);
   const peerConnectionRef = useRef(null);
   const localStreamRef = useRef(null);
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
+  const remoteAudioRef = useRef(null);
   const fileInputRef = useRef(null);
   const settingsFileInputRef = useRef(null);
   const messagesEndRef = useRef(null);
+  const ringtoneContextRef = useRef(null);
+  const ringtoneTimerRef = useRef(null);
+  const vibrationTimerRef = useRef(null);
 
   const filteredUsers = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -108,11 +113,72 @@ function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [messages, typingUsers, selectedUser]);
 
+  const stopIncomingAlert = () => {
+    if (ringtoneTimerRef.current) {
+      window.clearInterval(ringtoneTimerRef.current);
+      ringtoneTimerRef.current = null;
+    }
+
+    if (vibrationTimerRef.current) {
+      window.clearInterval(vibrationTimerRef.current);
+      vibrationTimerRef.current = null;
+    }
+
+    if (navigator.vibrate) navigator.vibrate(0);
+    if (ringtoneContextRef.current) {
+      ringtoneContextRef.current.close().catch(() => {});
+      ringtoneContextRef.current = null;
+    }
+  };
+
+  const playRingtone = () => {
+    stopIncomingAlert();
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (AudioContext) {
+      const audioContext = new AudioContext();
+      ringtoneContextRef.current = audioContext;
+      const ring = () => {
+        const oscillator = audioContext.createOscillator();
+        const gain = audioContext.createGain();
+        oscillator.type = 'sine';
+        oscillator.frequency.setValueAtTime(880, audioContext.currentTime);
+        oscillator.frequency.setValueAtTime(660, audioContext.currentTime + 0.18);
+        gain.gain.setValueAtTime(0.0001, audioContext.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.16, audioContext.currentTime + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, audioContext.currentTime + 0.42);
+        oscillator.connect(gain);
+        gain.connect(audioContext.destination);
+        oscillator.start();
+        oscillator.stop(audioContext.currentTime + 0.45);
+      };
+      ring();
+      ringtoneTimerRef.current = window.setInterval(ring, 1400);
+    }
+
+    if (navigator.vibrate) {
+      navigator.vibrate([350, 250, 350]);
+      vibrationTimerRef.current = window.setInterval(() => {
+        navigator.vibrate([350, 250, 350]);
+      }, 1400);
+    }
+  };
+
+  useEffect(() => {
+    if (callState.incomingCall) {
+      playRingtone();
+    } else {
+      stopIncomingAlert();
+    }
+
+    return stopIncomingAlert;
+  }, [callState.incomingCall]);
+
   const stopStreamTracks = (stream) => {
     stream?.getTracks()?.forEach((track) => track.stop());
   };
 
   const cleanupCallSession = () => {
+    stopIncomingAlert();
     if (peerConnectionRef.current) {
       peerConnectionRef.current.close();
       peerConnectionRef.current = null;
@@ -125,6 +191,7 @@ function App() {
 
     setLocalStream(null);
     setRemoteStream(null);
+    pendingIceCandidatesRef.current = [];
     setCallState({
       status: 'idle',
       remoteUser: null,
@@ -228,6 +295,10 @@ function App() {
       });
 
       await pc.setRemoteDescription(new RTCSessionDescription(callState.incomingCall.offer));
+      for (const candidate of pendingIceCandidatesRef.current) {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      }
+      pendingIceCandidatesRef.current = [];
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
 
@@ -359,6 +430,10 @@ function App() {
     });
 
     newSocket.on('call:incoming', (payload) => {
+      if (payload.fromUser) {
+        setSelectedUser(payload.fromUser);
+        setIsMobileChatOpen(true);
+      }
       setCallState({
         status: 'incoming',
         remoteUser: payload.fromUser,
@@ -379,9 +454,13 @@ function App() {
     });
 
     newSocket.on('call:ice-candidate', async (payload) => {
-      if (!peerConnectionRef.current || !payload.candidate) return;
+      if (!payload.candidate) return;
 
       try {
+        if (!peerConnectionRef.current?.remoteDescription) {
+          pendingIceCandidatesRef.current.push(payload.candidate);
+          return;
+        }
         await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(payload.candidate));
       } catch (error) {
         // Ignore candidate errors during negotiation.
@@ -597,6 +676,13 @@ function App() {
     }
   }, [remoteStream]);
 
+  useEffect(() => {
+    if (remoteAudioRef.current && remoteStream) {
+      remoteAudioRef.current.srcObject = remoteStream;
+      remoteAudioRef.current.play().catch(() => {});
+    }
+  }, [remoteStream]);
+
   const handleDeleteAccount = async () => {
     const confirmed = window.confirm('Are you sure you want to delete your account? This cannot be undone.');
     if (!confirmed) return;
@@ -727,32 +813,11 @@ function App() {
     const trimmed = typeof content === 'string' ? content.trim() : '';
     if (!trimmed && type !== 'image') return;
 
-    const tempMessage = {
-      temporaryId: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-      senderId: currentUser?._id,
-      receiverId: selectedUser._id,
-      text: type === 'image' ? content : sanitizeText(trimmed).slice(0, 2000),
-      type,
-      timestamp: new Date().toISOString()
-    };
-
-    setConversationMap((prev) => {
-      const existing = prev[selectedUser._id] || [];
-      const alreadyExists = existing.some((item) => item.temporaryId === tempMessage.temporaryId);
-      if (alreadyExists) {
-        return prev;
-      }
-
-      return {
-        ...prev,
-        [selectedUser._id]: [...existing, tempMessage]
-      };
-    });
-
     socketRef.current.emit('message:send', {
       receiverId: selectedUser._id,
       message: type === 'image' ? content : sanitizeText(trimmed).slice(0, 2000),
-      type
+      type,
+      clientMessageId: `${Date.now()}-${Math.random().toString(16).slice(2)}`
     });
 
     setMessageText('');
@@ -1021,34 +1086,32 @@ function App() {
               </div>
             </header>
 
-            {callState.incomingCall && (
-              <div className="call-banner">
-                <div>
-                  <strong>{callState.remoteUser?.displayName}</strong> is calling you ({callState.type})
-                </div>
-                <div className="call-banner-actions">
-                  <button className="accept-button" onClick={acceptIncomingCall}>Accept</button>
-                  <button className="ghost-button" onClick={cleanupCallSession}>Decline</button>
-                </div>
-              </div>
-            )}
-
             {(callState.status !== 'idle' || localStream || remoteStream) && (
-              <div className="call-panel">
+              <div className={`call-panel ${callState.type === 'video' ? 'video-call-stage' : 'audio-call-stage'}`}>
                 <div className="video-grid">
-                  <div className="video-box">
-                    <video ref={localVideoRef} autoPlay muted playsInline />
-                    <span>You</span>
-                  </div>
-                  {remoteStream && (
+                  {callState.type === 'video' && (
+                    <div className="video-box local-video-box">
+                      <video ref={localVideoRef} autoPlay muted playsInline />
+                      <span>You</span>
+                    </div>
+                  )}
+                  <audio ref={remoteAudioRef} autoPlay />
+                  {callState.type === 'video' && remoteStream && (
                     <div className="video-box">
                       <video ref={remoteVideoRef} autoPlay playsInline />
                       <span>{callState.remoteUser?.displayName || 'Remote User'}</span>
                     </div>
                   )}
+                  {callState.type === 'audio' && (
+                    <div className="audio-call-details">
+                      <div className="call-avatar">{callState.remoteUser?.displayName?.[0]?.toUpperCase() || 'U'}</div>
+                      <strong>{callState.remoteUser?.displayName || 'Contact'}</strong>
+                      <span>{callState.status === 'calling' ? 'Calling...' : callState.status === 'connected' ? 'Connected' : 'Connecting...'}</span>
+                    </div>
+                  )}
                 </div>
                 <div className="call-panel-actions">
-                  <button className="danger-button call-end-button" onClick={hangUpCall}>End Call</button>
+                  <button className="call-end-button" aria-label="End call" title="End call" onClick={hangUpCall}>☎</button>
                 </div>
               </div>
             )}
@@ -1109,6 +1172,21 @@ function App() {
           </div>
         )}
       </main>
+
+      {callState.incomingCall && (
+        <div className="incoming-call-overlay">
+          <div className="incoming-call-card">
+            <span className="incoming-call-label">Incoming {callState.type === 'video' ? 'video' : 'voice'} call</span>
+            <div className="incoming-call-avatar">{callState.remoteUser?.displayName?.[0]?.toUpperCase() || 'U'}</div>
+            <h2>{callState.remoteUser?.displayName || 'Unknown caller'}</h2>
+            <p>{callState.type === 'video' ? 'Video call' : 'Voice call'} is ringing</p>
+            <div className="incoming-call-actions">
+              <button className="call-decline-button" onClick={cleanupCallSession}>✕</button>
+              <button className="call-accept-button" onClick={acceptIncomingCall}>☎</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {isSettingsOpen && (
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setIsSettingsOpen(false)}>
