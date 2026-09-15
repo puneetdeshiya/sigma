@@ -423,7 +423,12 @@ const setUserOnline = async (userId, socketId) => {
   await emitUsersList();
 };
 
-const setUserOffline = async (userId) => {
+const setUserOffline = async (userId, socketId) => {
+  const currentEntry = onlineUsers.get(String(userId));
+  if (!currentEntry || currentEntry.socketId !== socketId) {
+    return;
+  }
+
   if (!mongoReady) {
     const user = memoryUsers.get(String(userId));
     if (!user) return;
@@ -1032,7 +1037,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', async () => {
-    await setUserOffline(userId);
+    await setUserOffline(userId, socket.id);
     for (const key of [...activeChats.keys()]) {
       if (key.split(':').includes(String(userId))) {
         activeChats.delete(key);

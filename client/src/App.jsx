@@ -221,7 +221,11 @@ function App() {
 
   const createPeerConnection = async (remoteUserId) => {
     const pc = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun.cloudflare.com:3478' }
+      ]
     });
 
     pc.onicecandidate = (event) => {
@@ -241,7 +245,14 @@ function App() {
 
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        setErrors({ api: 'Call connection failed. Check microphone/camera permission and network access.' });
         cleanupCallSession();
+      }
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+        setErrors({ api: 'Unable to reach the other device. Please retry the call.' });
       }
     };
 
@@ -285,16 +296,17 @@ function App() {
     if (!callState.incomingCall || !socketRef.current) return;
 
     try {
-      const stream = await requestLocalStream(callState.incomingCall.callType);
-      const pc = await createPeerConnection(callState.incomingCall.fromUserId);
+      const incomingCall = callState.incomingCall;
+      const stream = await requestLocalStream(incomingCall.callType);
+      const pc = await createPeerConnection(incomingCall.fromUserId);
       setCallState({
         status: 'connecting',
-        remoteUser: callState.incomingCall.fromUser,
+        remoteUser: incomingCall.fromUser,
         incomingCall: null,
-        type: callState.incomingCall.callType
+        type: incomingCall.callType
       });
 
-      await pc.setRemoteDescription(new RTCSessionDescription(callState.incomingCall.offer));
+      await pc.setRemoteDescription(new RTCSessionDescription(incomingCall.offer));
       for (const candidate of pendingIceCandidatesRef.current) {
         await pc.addIceCandidate(new RTCIceCandidate(candidate));
       }
@@ -303,7 +315,7 @@ function App() {
       await pc.setLocalDescription(answer);
 
       socketRef.current.emit('call:answer', {
-        receiverId: callState.incomingCall.fromUserId,
+        receiverId: incomingCall.fromUserId,
         answer
       });
 
@@ -447,6 +459,10 @@ function App() {
 
       try {
         await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(payload.answer));
+        for (const candidate of pendingIceCandidatesRef.current) {
+          await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(candidate));
+        }
+        pendingIceCandidatesRef.current = [];
         setCallState((prev) => ({ ...prev, status: 'connected' }));
       } catch (error) {
         setErrors({ api: 'Unable to connect the call.' });
