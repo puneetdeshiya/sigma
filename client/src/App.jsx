@@ -396,7 +396,12 @@ function App() {
     });
 
     newSocket.on('users:list', (payload) => {
-      setUsers(payload.users || []);
+      const nextUsers = payload.users || [];
+      setUsers(nextUsers);
+      setSelectedUser((previousUser) => {
+        if (!previousUser) return previousUser;
+        return nextUsers.find((user) => user._id === previousUser._id) || previousUser;
+      });
     });
 
     newSocket.on('message:receive', (payload) => {

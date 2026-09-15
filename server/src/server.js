@@ -399,11 +399,15 @@ const emitUsersList = async () => {
 };
 
 const setUserOnline = async (userId, socketId) => {
+  const existingEntry = onlineUsers.get(String(userId));
+  const socketIds = existingEntry?.socketIds || new Set();
+  socketIds.add(socketId);
+
   if (!mongoReady) {
     const user = memoryUsers.get(String(userId));
     if (!user) return;
 
-    onlineUsers.set(String(userId), { socketId, username: user.username });
+    onlineUsers.set(String(userId), { socketId, socketIds, username: user.username });
     user.lastSeen = new Date();
     user.online = true;
     memoryUsers.set(String(userId), user);
@@ -415,7 +419,7 @@ const setUserOnline = async (userId, socketId) => {
   const user = await User.findById(userId);
   if (!user) return;
 
-  onlineUsers.set(String(userId), { socketId, username: user.username });
+  onlineUsers.set(String(userId), { socketId, socketIds, username: user.username });
   user.lastSeen = new Date();
   user.online = true;
   await user.save();
@@ -425,7 +429,18 @@ const setUserOnline = async (userId, socketId) => {
 
 const setUserOffline = async (userId, socketId) => {
   const currentEntry = onlineUsers.get(String(userId));
-  if (!currentEntry || currentEntry.socketId !== socketId) {
+  if (!currentEntry) {
+    return;
+  }
+
+  const socketIds = currentEntry.socketIds || new Set([currentEntry.socketId]);
+  socketIds.delete(socketId);
+  if (socketIds.size > 0) {
+    onlineUsers.set(String(userId), {
+      ...currentEntry,
+      socketId: [...socketIds][socketIds.size - 1],
+      socketIds
+    });
     return;
   }
 
