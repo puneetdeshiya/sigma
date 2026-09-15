@@ -889,10 +889,13 @@ io.on('connection', (socket) => {
       return;
     }
 
-    io.to(receiverSocketId).emit('call:incoming', {
+    getUserById(userId).then((caller) => {
+      io.to(receiverSocketId).emit('call:incoming', {
       fromUserId: userId,
+      fromUser: caller ? sanitizeUser(caller.toObject ? caller.toObject() : caller) : null,
       offer,
       callType
+      });
     });
   });
 
@@ -931,7 +934,7 @@ io.on('connection', (socket) => {
     });
   });
 
-  socket.on('message:send', async ({ receiverId, message, type }) => {
+  socket.on('message:send', async ({ receiverId, message, type, clientMessageId }) => {
     if (!receiverId || !message) {
       socket.emit('error', { message: 'Message cannot be empty.' });
       return;
@@ -965,7 +968,7 @@ io.on('connection', (socket) => {
 
     const conversationKey = [userId, receiverId].sort().join(':');
     const tempMessage = {
-      temporaryId: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      temporaryId: clientMessageId || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
       senderId: userId,
       receiverId,
       text: sanitizedText,
