@@ -1275,25 +1275,48 @@ function App() {
           ))}
         </div>
 
-        <div className="friend-section">
-          <h4>Friend Requests</h4>
+        <section className="request-panel">
+          <div className="section-heading">
+            <h4>Friend requests</h4>
+            {friends.incomingRequests.length > 0 && <span className="request-count">{friends.incomingRequests.length}</span>}
+          </div>
           {friends.incomingRequests.length === 0 ? (
             <p className="muted-text">No incoming requests</p>
           ) : (
-            <div className="mini-list">
+            <div className="request-list">
               {friends.incomingRequests.map((request) => (
-                <div key={request._id} className="mini-item">
-                  <span>{request.user.displayName}</span>
-                  <button className="accept-button" onClick={() => handleAcceptFriendRequest(request._id)}>Accept</button>
+                <div key={request._id} className="request-card">
+                  <div className="request-person">
+                    {request.user.avatar ? <img src={request.user.avatar} alt="" className="avatar small avatar-image" /> : <div className="avatar small">{request.user.displayName?.[0]?.toUpperCase() || 'U'}</div>}
+                    <div><strong>{request.user.displayName}</strong><span>@{request.user.username}</span></div>
+                  </div>
+                  <button className="request-accept-button" onClick={() => handleAcceptFriendRequest(request._id)}>Accept</button>
                 </div>
               ))}
             </div>
           )}
-        </div>
+        </section>
 
-        <div className="user-list">
-          {filteredUsers.filter((user) => user._id !== currentUser?._id).map((user) => {
-            const friend = isFriend(user._id);
+        <section className="friend-section">
+          <div className="section-heading"><h4>Friends</h4><span className="section-count">{friends.acceptedUsers.length}</span></div>
+          <div className="user-list">
+          {friends.acceptedUsers.map((user) => {
+            return (
+              <div key={user._id} className={`user-row friend-row ${selectedUser?._id === user._id ? 'active' : ''}`}>
+                <button className="user-button" onClick={() => openChat(user)}>
+                  {user.avatar ? <img src={user.avatar} alt="" className="avatar small avatar-image" /> : <div className="avatar small">{user.displayName?.[0]?.toUpperCase() || 'U'}</div>}
+                  <div className="user-info"><div className="row"><strong>{user.displayName}</strong><span className={user.online ? 'online-dot' : 'offline-dot'} /></div><span>@{user.username}</span></div>
+                </button>
+              </div>
+            );
+          })}
+          </div>
+        </section>
+
+        <section className="people-section">
+          <div className="section-heading"><h4>Online people</h4><span className="section-count">{filteredUsers.filter((user) => user._id !== currentUser?._id && user.online && !isFriend(user._id)).length}</span></div>
+          <div className="user-list">
+          {filteredUsers.filter((user) => user._id !== currentUser?._id && user.online && !isFriend(user._id)).map((user) => {
             const outgoing = hasOutgoingRequest(user._id);
             const incoming = hasIncomingRequest(user._id);
 
@@ -1310,19 +1333,18 @@ function App() {
                   </div>
                 </button>
 
-                {!friend && (
-                  <button
+                <button
                     className="friend-button"
                     onClick={() => handleSendFriendRequest(user._id)}
                     disabled={outgoing || incoming}
                   >
                     {outgoing ? 'Requested' : incoming ? 'Request Received' : 'Add Friend'}
-                  </button>
-                )}
+                </button>
               </div>
             );
           })}
-        </div>
+          </div>
+        </section>
 
         <footer className="app-footer">Developed by <strong>Sigma</strong></footer>
       </aside>

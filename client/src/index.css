@@ -320,6 +320,85 @@ button {
   font-size: 0.82rem;
 }
 
+.section-count,
+.request-count {
+  min-width: 22px;
+  height: 22px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+
+.request-panel,
+.friend-section,
+.people-section {
+  margin-bottom: 16px;
+}
+
+.request-panel {
+  padding: 12px;
+  border: 1px solid #f0abfc;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #eff6ff 0%, #fdf2f8 100%);
+}
+
+.request-list {
+  display: grid;
+  gap: 8px;
+}
+
+.request-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid rgba(236, 72, 153, 0.22);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.8);
+}
+
+.request-person {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.request-person strong,
+.request-person span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.request-person span {
+  color: #64748b;
+  font-size: 0.72rem;
+}
+
+.request-accept-button {
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 9px;
+  padding: 8px 12px;
+  background: linear-gradient(135deg, #2563eb, #ec4899);
+  color: white;
+  font-size: 0.75rem;
+  font-weight: 800;
+  box-shadow: 0 5px 12px rgba(37, 99, 235, 0.22);
+}
+
+.request-accept-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 7px 16px rgba(236, 72, 153, 0.28);
+}
+
 .create-group-button {
   width: 28px;
   height: 28px;

@@ -541,6 +541,9 @@ app.post('/api/auth/signup', authLimiter, async (req, res) => {
     }
 
     const normalizedUsername = username.trim().toLowerCase();
+    if (ADMIN_USERNAME && normalizedUsername === ADMIN_USERNAME) {
+      return res.status(409).json({ message: 'This username is reserved.' });
+    }
     const existingUser = mongoReady
       ? await User.findOne({ username: normalizedUsername })
       : [...memoryUsers.values()].find((user) => user.username === normalizedUsername);
