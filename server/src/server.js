@@ -447,6 +447,10 @@ const emitUsersList = async () => {
 };
 
 const setUserOnline = async (userId, socketId) => {
+  if (String(userId) === 'admin') {
+    return;
+  }
+
   const existingEntry = onlineUsers.get(String(userId));
   const socketIds = existingEntry?.socketIds || new Set();
   socketIds.add(socketId);
@@ -476,6 +480,10 @@ const setUserOnline = async (userId, socketId) => {
 };
 
 const setUserOffline = async (userId, socketId) => {
+  if (String(userId) === 'admin') {
+    return;
+  }
+
   const currentEntry = onlineUsers.get(String(userId));
   if (!currentEntry) {
     return;
