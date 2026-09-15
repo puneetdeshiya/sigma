@@ -900,7 +900,7 @@ io.on('connection', (socket) => {
     activeTypingUsers.set(String(userId), updatedTypingList);
   });
 
-  socket.on('call:offer', ({ receiverId, offer, callType }) => {
+  socket.on('call:offer', ({ receiverId, offer, callType, callId }) => {
     if (!receiverId || !offer) return;
 
     const receiverSocketId = onlineUsers.get(String(receiverId))?.socketId;
@@ -911,15 +911,16 @@ io.on('connection', (socket) => {
 
     getUserById(userId).then((caller) => {
       io.to(receiverSocketId).emit('call:incoming', {
-      fromUserId: userId,
-      fromUser: caller ? sanitizeUser(caller.toObject ? caller.toObject() : caller) : null,
-      offer,
-      callType
+        fromUserId: userId,
+        fromUser: caller ? sanitizeUser(caller.toObject ? caller.toObject() : caller) : null,
+        offer,
+        callType,
+        callId
       });
     });
   });
 
-  socket.on('call:answer', ({ receiverId, answer }) => {
+  socket.on('call:answer', ({ receiverId, answer, callId }) => {
     if (!receiverId || !answer) return;
 
     const receiverSocketId = onlineUsers.get(String(receiverId))?.socketId;
@@ -927,11 +928,12 @@ io.on('connection', (socket) => {
 
     io.to(receiverSocketId).emit('call:answer', {
       fromUserId: userId,
-      answer
+      answer,
+      callId
     });
   });
 
-  socket.on('call:ice-candidate', ({ receiverId, candidate }) => {
+  socket.on('call:ice-candidate', ({ receiverId, candidate, callId }) => {
     if (!receiverId || !candidate) return;
 
     const receiverSocketId = onlineUsers.get(String(receiverId))?.socketId;
@@ -939,18 +941,20 @@ io.on('connection', (socket) => {
 
     io.to(receiverSocketId).emit('call:ice-candidate', {
       fromUserId: userId,
-      candidate
+      candidate,
+      callId
     });
   });
 
-  socket.on('call:hangup', ({ receiverId }) => {
+  socket.on('call:hangup', ({ receiverId, callId }) => {
     if (!receiverId) return;
 
     const receiverSocketId = onlineUsers.get(String(receiverId))?.socketId;
     if (!receiverSocketId) return;
 
     io.to(receiverSocketId).emit('call:hangup', {
-      fromUserId: userId
+      fromUserId: userId,
+      callId
     });
   });
 

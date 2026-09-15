@@ -89,6 +89,7 @@ function App() {
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const remoteAudioRef = useRef(null);
+  const callIdRef = useRef(null);
   const fileInputRef = useRef(null);
   const settingsFileInputRef = useRef(null);
   const messagesEndRef = useRef(null);
@@ -179,6 +180,7 @@ function App() {
 
   const cleanupCallSession = () => {
     stopIncomingAlert();
+    callIdRef.current = null;
     if (peerConnectionRef.current) {
       peerConnectionRef.current.close();
       peerConnectionRef.current = null;
@@ -196,7 +198,8 @@ function App() {
       status: 'idle',
       remoteUser: null,
       incomingCall: null,
-      type: 'audio'
+      type: 'audio',
+      callId: null
     });
   };
 
@@ -232,7 +235,8 @@ function App() {
       if (event.candidate && socketRef.current) {
         socketRef.current.emit('call:ice-candidate', {
           receiverId: remoteUserId,
-          candidate: event.candidate
+          candidate: event.candidate,
+          callId: callIdRef.current
         });
       }
     };
@@ -268,13 +272,16 @@ function App() {
 
   const startCall = async (user, callType = 'audio') => {
     try {
+      const callId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      callIdRef.current = callId;
       const stream = await requestLocalStream(callType);
       const pc = await createPeerConnection(user._id);
       setCallState({
         status: 'calling',
         remoteUser: user,
         incomingCall: null,
-        type: callType
+        type: callType,
+        callId
       });
 
       const offer = await pc.createOffer();
@@ -283,7 +290,8 @@ function App() {
       socketRef.current.emit('call:offer', {
         receiverId: user._id,
         offer,
-        callType
+        callType,
+        callId
       });
 
       setLocalStream(stream);
@@ -297,13 +305,15 @@ function App() {
 
     try {
       const incomingCall = callState.incomingCall;
+      callIdRef.current = incomingCall.callId;
       const stream = await requestLocalStream(incomingCall.callType);
       const pc = await createPeerConnection(incomingCall.fromUserId);
       setCallState({
         status: 'connecting',
         remoteUser: incomingCall.fromUser,
         incomingCall: null,
-        type: incomingCall.callType
+        type: incomingCall.callType,
+        callId: incomingCall.callId
       });
 
       await pc.setRemoteDescription(new RTCSessionDescription(incomingCall.offer));
@@ -316,7 +326,8 @@ function App() {
 
       socketRef.current.emit('call:answer', {
         receiverId: incomingCall.fromUserId,
-        answer
+        answer,
+        callId: incomingCall.callId
       });
 
       setLocalStream(stream);
@@ -328,7 +339,8 @@ function App() {
   const hangUpCall = () => {
     if (socketRef.current && callState.remoteUser?._id) {
       socketRef.current.emit('call:hangup', {
-        receiverId: callState.remoteUser._id
+        receiverId: callState.remoteUser._id,
+        callId: callState.callId
       });
     }
 
@@ -455,12 +467,13 @@ function App() {
         status: 'incoming',
         remoteUser: payload.fromUser,
         incomingCall: payload,
-        type: payload.callType || 'audio'
+        type: payload.callType || 'audio',
+        callId: payload.callId || null
       });
     });
 
     newSocket.on('call:answer', async (payload) => {
-      if (!peerConnectionRef.current || !payload.answer) return;
+      if (!peerConnectionRef.current || !payload.answer || (payload.callId && payload.callId !== callIdRef.current)) return;
 
       try {
         await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(payload.answer));
@@ -475,7 +488,7 @@ function App() {
     });
 
     newSocket.on('call:ice-candidate', async (payload) => {
-      if (!payload.candidate) return;
+      if (!payload.candidate || (payload.callId && payload.callId !== callIdRef.current)) return;
 
       try {
         if (!peerConnectionRef.current?.remoteDescription) {
@@ -488,7 +501,8 @@ function App() {
       }
     });
 
-    newSocket.on('call:hangup', () => {
+    newSocket.on('call:hangup', (payload) => {
+      if (payload.callId && payload.callId !== callIdRef.current) return;
       cleanupCallSession();
     });
 
@@ -1102,8 +1116,8 @@ function App() {
               </div>
 
               <div className="chat-actions">
-                <button className="icon-button" aria-label="Start video call" title="Video call" onClick={() => startCall(selectedUser, 'video')}>▣</button>
-                <button className="icon-button" aria-label="Start voice call" title="Voice call" onClick={() => startCall(selectedUser, 'audio')}>◉</button>
+                <button className="icon-button" aria-label="Start video call" title="Video call" onClick={() => startCall(selectedUser, 'video')}>📹</button>
+                <button className="icon-button" aria-label="Start voice call" title="Voice call" onClick={() => startCall(selectedUser, 'audio')}>📞</button>
               </div>
             </header>
 
@@ -1171,7 +1185,7 @@ function App() {
                 onChange={handleImageSelection}
                 hidden
               />
-              <button className="upload-button" aria-label="Share photo" title="Share photo" onClick={() => fileInputRef.current?.click()}>▧</button>
+              <button className="upload-button" aria-label="Share photo" title="Share photo" onClick={() => fileInputRef.current?.click()}>📎</button>
               <input
                 type="text"
                 placeholder="Type a message"
