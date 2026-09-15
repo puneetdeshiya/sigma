@@ -196,6 +196,63 @@ button {
   margin-bottom: 16px;
 }
 
+.admin-panel {
+  margin: 0 0 16px;
+  padding: 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 14px;
+  background: #eff6ff;
+}
+
+.admin-panel-heading,
+.admin-user-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.admin-panel h4 {
+  margin: 0 0 8px;
+  color: #1e3a8a;
+}
+
+.refresh-button,
+.admin-delete-button {
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #2563eb;
+  font-weight: 700;
+}
+
+.admin-user-row {
+  padding: 8px 0;
+  border-top: 1px solid #dbeafe;
+}
+
+.admin-user-row div {
+  min-width: 0;
+}
+
+.admin-user-row strong,
+.admin-user-row span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-user-row span {
+  color: #64748b;
+  font-size: 0.75rem;
+}
+
+.admin-delete-button {
+  color: #dc2626;
+  font-size: 1.15rem;
+}
+
 .settings-button {
   border: 1px solid #dbe4f0;
   border-radius: 9px;
@@ -243,6 +300,62 @@ button {
 
 .search-box {
   margin-bottom: 14px;
+}
+
+.group-section {
+  margin-bottom: 16px;
+}
+
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 7px;
+}
+
+.section-heading h4,
+.friend-section h4 {
+  margin: 0 0 8px;
+  color: #475569;
+  font-size: 0.82rem;
+}
+
+.create-group-button {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 8px;
+  background: #2563eb;
+  color: white;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.group-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 6px;
+  border: 1px solid #dbeafe;
+  border-radius: 11px;
+  padding: 8px;
+  background: #eff6ff;
+  color: #1e3a8a;
+  text-align: left;
+  font-weight: 600;
+}
+
+.group-avatar {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #2563eb, #38bdf8);
+  color: white;
+  font-weight: 800;
 }
 
 .search-box input {

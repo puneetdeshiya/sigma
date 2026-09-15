@@ -39,6 +39,8 @@ const io = new Server(server, {
 const PORT = process.env.PORT || 5000;
 const MONGODB_URI = process.env.MONGODB_URI;
 const JWT_SECRET = process.env.JWT_SECRET;
+const ADMIN_USERNAME = (process.env.ADMIN_USERNAME || '').trim().toLowerCase();
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 
 if (!MONGODB_URI || !JWT_SECRET) {
   console.error('Missing required environment variables. Check your .env file.');
@@ -86,14 +88,23 @@ const friendRequestSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 }, { collection: 'friend_requests' });
 
+const groupSchema = new mongoose.Schema({
+  name: { type: String, required: true, trim: true, maxlength: 80 },
+  creatorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  memberIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+  createdAt: { type: Date, default: Date.now }
+}, { collection: 'groups' });
+
 const User = mongoose.model('User', userSchema);
 const FriendRequest = mongoose.model('FriendRequest', friendRequestSchema);
+const Group = mongoose.model('Group', groupSchema);
 
 const activeChats = new Map();
 const activeTypingUsers = new Map();
 const onlineUsers = new Map();
 const memoryUsers = new Map();
 const memoryFriendRequests = [];
+const memoryGroups = [];
 let mongoReady = false;
 
 const normalizeText = (text) => {
@@ -105,7 +116,7 @@ const normalizeText = (text) => {
 };
 
 const createToken = (user) => {
-  return jwt.sign({ id: user._id, username: user.username }, JWT_SECRET, {
+  return jwt.sign({ id: user._id, username: user.username, role: user.role || 'user' }, JWT_SECRET, {
     expiresIn: '7d'
   });
 };
@@ -126,7 +137,8 @@ const sanitizeUser = (user) => ({
   profile: user.profile,
   avatar: user.avatar,
   lastSeen: user.lastSeen,
-  online: user.online
+  online: user.online,
+  role: user.role || 'user'
 });
 
 const createMemoryId = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -364,6 +376,33 @@ const areUsersFriends = async (userIdA, userIdB) => {
   });
 };
 
+const getGroupById = async (groupId) => {
+  if (mongoReady) return Group.findById(groupId);
+  return memoryGroups.find((group) => String(group._id) === String(groupId)) || null;
+};
+
+const sanitizeGroup = (group, memberUsers = []) => ({
+  _id: group._id,
+  name: group.name,
+  creatorId: group.creatorId,
+  memberIds: (group.memberIds || []).map(String),
+  members: memberUsers.map(sanitizeUser)
+});
+
+const getUserGroups = async (userId) => {
+  if (mongoReady) {
+    const groups = await Group.find({ memberIds: userId }).sort({ createdAt: -1 });
+    const memberIds = [...new Set(groups.flatMap((group) => group.memberIds.map(String)))];
+    const members = await User.find({ _id: { $in: memberIds } });
+    const memberMap = new Map(members.map((user) => [String(user._id), user.toObject()]));
+    return groups.map((group) => sanitizeGroup(group.toObject(), group.memberIds.map((id) => memberMap.get(String(id))).filter(Boolean)));
+  }
+
+  return memoryGroups
+    .filter((group) => group.memberIds.map(String).includes(String(userId)))
+    .map((group) => sanitizeGroup(group, group.memberIds.map((id) => memoryUsers.get(String(id))).filter(Boolean)));
+};
+
 const authMiddleware = (req, res, next) => {
   const authHeader = req.headers.authorization || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
@@ -379,6 +418,15 @@ const authMiddleware = (req, res, next) => {
 
   req.user = decoded;
   next();
+};
+
+const adminMiddleware = (req, res, next) => {
+  authMiddleware(req, res, () => {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required.' });
+    }
+    next();
+  });
 };
 
 const getUserList = async () => {
@@ -541,6 +589,26 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
     }
 
     const normalizedUsername = username.trim().toLowerCase();
+    if (ADMIN_USERNAME && normalizedUsername === ADMIN_USERNAME) {
+      if (!ADMIN_PASSWORD || password !== ADMIN_PASSWORD) {
+        return res.status(401).json({ message: 'Invalid username or password.' });
+      }
+
+      const admin = {
+        _id: 'admin',
+        username: ADMIN_USERNAME,
+        displayName: 'Sigma Admin',
+        email: '',
+        profile: 'Application administrator',
+        avatar: '',
+        lastSeen: new Date(),
+        online: true,
+        role: 'admin'
+      };
+
+      return res.json({ token: createToken(admin), user: sanitizeUser(admin) });
+    }
+
     const user = mongoReady
       ? await User.findOne({ username: normalizedUsername })
       : [...memoryUsers.values()].find((entry) => entry.username === normalizedUsername);
@@ -577,6 +645,22 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
 
 app.get('/api/auth/me', authMiddleware, async (req, res) => {
   try {
+    if (req.user.role === 'admin') {
+      return res.json({
+        user: sanitizeUser({
+          _id: 'admin',
+          username: ADMIN_USERNAME,
+          displayName: 'Sigma Admin',
+          email: '',
+          profile: 'Application administrator',
+          avatar: '',
+          lastSeen: new Date(),
+          online: true,
+          role: 'admin'
+        })
+      });
+    }
+
     const user = await getUserById(req.user.id);
     if (!user) {
       return res.status(404).json({ message: 'User not found.' });
@@ -678,6 +762,41 @@ app.get('/api/users', authMiddleware, async (req, res) => {
   }
 });
 
+app.get('/api/admin/users', adminMiddleware, async (req, res) => {
+  try {
+    const users = await getAllUsers();
+    res.json({ users });
+  } catch (error) {
+    console.error('Admin users error:', error);
+    res.status(500).json({ message: 'Unable to load users.' });
+  }
+});
+
+app.delete('/api/admin/users/:userId', adminMiddleware, async (req, res) => {
+  try {
+    if (req.params.userId === 'admin') {
+      return res.status(400).json({ message: 'The admin account cannot be deleted.' });
+    }
+
+    const user = await getUserById(req.params.userId);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
+
+    const onlineEntry = onlineUsers.get(String(req.params.userId));
+    for (const socketId of onlineEntry?.socketIds || [onlineEntry?.socketId]) {
+      if (socketId) io.sockets.sockets.get(socketId)?.disconnect(true);
+    }
+    onlineUsers.delete(String(req.params.userId));
+    await deleteUserRecord(req.params.userId);
+    await emitUsersList();
+    res.json({ message: 'User deleted successfully.' });
+  } catch (error) {
+    console.error('Admin delete user error:', error);
+    res.status(500).json({ message: 'Unable to delete user.' });
+  }
+});
+
 app.get('/api/friends', authMiddleware, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -686,6 +805,50 @@ app.get('/api/friends', authMiddleware, async (req, res) => {
   } catch (error) {
     console.error('Get friends error:', error);
     res.status(500).json({ message: 'Unable to load friends.' });
+  }
+});
+
+app.get('/api/groups', authMiddleware, async (req, res) => {
+  try {
+    res.json({ groups: await getUserGroups(req.user.id) });
+  } catch (error) {
+    console.error('Get groups error:', error);
+    res.status(500).json({ message: 'Unable to load groups.' });
+  }
+});
+
+app.post('/api/groups', authMiddleware, async (req, res) => {
+  try {
+    const name = normalizeText(req.body.name).slice(0, 80);
+    const memberIds = [...new Set((Array.isArray(req.body.memberIds) ? req.body.memberIds : []).map(String))]
+      .filter((id) => id !== String(req.user.id));
+    if (!name || memberIds.length === 0) {
+      return res.status(400).json({ message: 'Group name and at least one friend are required.' });
+    }
+
+    const allMemberIds = [String(req.user.id), ...memberIds];
+    const validUsers = mongoReady
+      ? await User.countDocuments({ _id: { $in: allMemberIds } })
+      : allMemberIds.filter((id) => memoryUsers.has(id)).length;
+    if (validUsers !== allMemberIds.length) {
+      return res.status(400).json({ message: 'One or more group members are invalid.' });
+    }
+
+    const group = mongoReady
+      ? await new Group({ name, creatorId: req.user.id, memberIds: allMemberIds }).save()
+      : (() => {
+          const created = { _id: createMemoryId(), name, creatorId: req.user.id, memberIds: allMemberIds, createdAt: new Date() };
+          memoryGroups.push(created);
+          return created;
+        })();
+
+    const members = mongoReady
+      ? await User.find({ _id: { $in: allMemberIds } })
+      : allMemberIds.map((id) => memoryUsers.get(id)).filter(Boolean);
+    res.status(201).json({ group: sanitizeGroup(group.toObject ? group.toObject() : group, members.map((user) => user.toObject ? user.toObject() : user)) });
+  } catch (error) {
+    console.error('Create group error:', error);
+    res.status(500).json({ message: 'Unable to create group.' });
   }
 });
 
@@ -889,8 +1052,26 @@ io.on('connection', (socket) => {
     });
   });
 
+  socket.on('group:open', async ({ groupId }) => {
+    const group = await getGroupById(groupId);
+    if (!group || !(group.memberIds || []).map(String).includes(String(userId))) {
+      socket.emit('error', { message: 'You are not a member of this group.' });
+      return;
+    }
+    const groupKey = `group:${groupId}`;
+    socket.emit('group:open', {
+      group: { _id: group._id, name: group.name, memberIds: group.memberIds.map(String) },
+      messages: activeChats.get(groupKey) || []
+    });
+  });
+
   socket.on('chat:close', ({ targetUserId }) => {
     if (!targetUserId) return;
+
+    if (String(targetUserId).startsWith('group:')) {
+      activeChats.delete(String(targetUserId));
+      return;
+    }
 
     const conversationKey = [userId, targetUserId].sort().join(':');
     activeChats.delete(conversationKey);
@@ -1032,6 +1213,37 @@ io.on('connection', (socket) => {
         message: tempMessage,
         sender
       });
+    }
+  });
+
+  socket.on('group:message:send', async ({ groupId, message, type, clientMessageId }) => {
+    const group = await getGroupById(groupId);
+    if (!group || !(group.memberIds || []).map(String).includes(String(userId))) return;
+    const rawMessage = typeof message === 'string' ? message : '';
+    const isImage = type === 'image' || rawMessage.startsWith('data:image/');
+    const text = isImage ? rawMessage : normalizeText(rawMessage);
+    if (!text) return;
+
+    const groupKey = `group:${groupId}`;
+    const groupMessage = {
+      temporaryId: clientMessageId || createMemoryId(),
+      groupId: String(groupId),
+      senderId: userId,
+      text,
+      type: isImage ? 'image' : 'text',
+      timestamp: new Date().toISOString()
+    };
+    activeChats.set(groupKey, [...(activeChats.get(groupKey) || []), groupMessage]);
+    const sender = await getUserById(userId);
+    for (const memberId of group.memberIds.map(String)) {
+      const memberSocketId = onlineUsers.get(memberId)?.socketId;
+      if (memberSocketId) {
+        io.to(memberSocketId).emit('group:message:receive', {
+          groupId: String(groupId),
+          message: groupMessage,
+          sender: sender ? sanitizeUser(sender.toObject ? sender.toObject() : sender) : null
+        });
+      }
     }
   });
 

@@ -65,6 +65,8 @@ function App() {
   const [errors, setErrors] = useState({});
   const [loading, setLoading] = useState(false);
   const [users, setUsers] = useState([]);
+  const [adminUsers, setAdminUsers] = useState([]);
+  const [groups, setGroups] = useState([]);
   const [friends, setFriends] = useState({
     acceptedUsers: [],
     incomingRequests: [],
@@ -540,6 +542,27 @@ function App() {
       setIsMobileChatOpen(true);
     });
 
+    newSocket.on('group:open', (payload) => {
+      const group = { ...payload.group, isGroup: true };
+      const nextMessages = payload.messages || [];
+      setConversationMap((prev) => ({ ...prev, [`group:${group._id}`]: nextMessages }));
+      setMessages(nextMessages);
+      setSelectedUser(group);
+      setIsMobileChatOpen(true);
+    });
+
+    newSocket.on('group:message:receive', (payload) => {
+      const groupKey = `group:${payload.groupId}`;
+      setConversationMap((prev) => {
+        const existing = prev[groupKey] || [];
+        if (existing.some((item) => item.temporaryId === payload.message.temporaryId)) return prev;
+        return { ...prev, [groupKey]: [...existing, payload.message] };
+      });
+      if (selectedUser?.isGroup && String(selectedUser._id) === String(payload.groupId)) {
+        setMessages((prev) => prev.some((item) => item.temporaryId === payload.message.temporaryId) ? prev : [...prev, payload.message]);
+      }
+    });
+
     newSocket.on('call:incoming', (payload) => {
       if (payload.fromUser) {
         setSelectedUser(payload.fromUser);
@@ -618,7 +641,12 @@ function App() {
   useEffect(() => {
     if (!authUser || !token) return;
     fetchUsers();
-    fetchFriends();
+    if (authUser.role === 'admin') {
+      fetchAdminUsers();
+    } else {
+      fetchFriends();
+      fetchGroups();
+    }
   }, [authUser, token]);
 
   useEffect(() => {
@@ -669,6 +697,68 @@ function App() {
       });
     } catch (error) {
       setErrors({ api: error.message || 'Unable to load friends.' });
+    }
+  };
+
+  const fetchGroups = async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/groups`, { headers: { Authorization: `Bearer ${token}` } });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message || 'Unable to load groups.');
+      setGroups(data.groups || []);
+    } catch (error) {
+      setErrors({ api: error.message || 'Unable to load groups.' });
+    }
+  };
+
+  const createGroup = async () => {
+    const name = window.prompt('Group name');
+    if (!name?.trim()) return;
+    const selectedIds = friends.acceptedUsers.map((friend) => friend._id);
+    if (selectedIds.length === 0) {
+      setErrors({ api: 'Accept at least one friend before creating a group.' });
+      return;
+    }
+    try {
+      const response = await fetch(`${API_URL}/api/groups`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ name, memberIds: selectedIds })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message || 'Unable to create group.');
+      setGroups((prev) => [data.group, ...prev]);
+    } catch (error) {
+      setErrors({ api: error.message || 'Unable to create group.' });
+    }
+  };
+
+  const fetchAdminUsers = async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/admin/users`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message || 'Unable to load admin users.');
+      setAdminUsers(data.users || []);
+    } catch (error) {
+      setErrors({ api: error.message || 'Unable to load admin users.' });
+    }
+  };
+
+  const handleAdminDeleteUser = async (userId) => {
+    if (!window.confirm('Delete this user and all friend requests?')) return;
+    try {
+      const response = await fetch(`${API_URL}/api/admin/users/${userId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message || 'Unable to delete user.');
+      await fetchAdminUsers();
+      await fetchUsers();
+    } catch (error) {
+      setErrors({ api: error.message || 'Unable to delete user.' });
     }
   };
 
@@ -898,6 +988,13 @@ function App() {
   };
 
   const openChat = (user) => {
+    if (user.isGroup) {
+      setSelectedUser(user);
+      setIsMobileChatOpen(true);
+      setMessages(conversationMap[`group:${user._id}`] || []);
+      socketRef.current?.emit('group:open', { groupId: user._id });
+      return;
+    }
     if (!isFriend(user._id)) {
       setErrors({ api: 'Chat is only available with accepted friends.' });
       return;
@@ -913,7 +1010,9 @@ function App() {
   };
 
   const closeChat = () => {
-    if (selectedUser && socketRef.current) {
+    if (selectedUser?.isGroup && socketRef.current) {
+      socketRef.current.emit('chat:close', { targetUserId: `group:${selectedUser._id}` });
+    } else if (selectedUser && socketRef.current) {
       socketRef.current.emit('chat:close', { targetUserId: selectedUser._id });
     }
 
@@ -924,7 +1023,7 @@ function App() {
     setConversationMap((prev) => {
       if (!selectedUser) return prev;
       const next = { ...prev };
-      delete next[selectedUser._id];
+      delete next[selectedUser.isGroup ? `group:${selectedUser._id}` : selectedUser._id];
       return next;
     });
   };
@@ -932,7 +1031,7 @@ function App() {
   const sendMessage = (content, type = 'text') => {
     if (!selectedUser || !socketRef.current) return;
 
-    if (!isFriend(selectedUser._id)) {
+    if (!selectedUser.isGroup && !isFriend(selectedUser._id)) {
       setErrors({ api: 'Chat is only available with accepted friends.' });
       return;
     }
@@ -940,11 +1039,19 @@ function App() {
     const trimmed = typeof content === 'string' ? content.trim() : '';
     if (!trimmed && type !== 'image') return;
 
-    socketRef.current.emit('message:send', {
+    const clientMessageId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    if (selectedUser.isGroup) {
+      socketRef.current.emit('group:message:send', {
+        groupId: selectedUser._id,
+        message: type === 'image' ? content : sanitizeText(trimmed).slice(0, 2000),
+        type,
+        clientMessageId
+      });
+    } else socketRef.current.emit('message:send', {
       receiverId: selectedUser._id,
       message: type === 'image' ? content : sanitizeText(trimmed).slice(0, 2000),
       type,
-      clientMessageId: `${Date.now()}-${Math.random().toString(16).slice(2)}`
+      clientMessageId
     });
 
     setMessageText('');
@@ -1128,6 +1235,24 @@ function App() {
           <button className="danger-button" onClick={handleDeleteAccount}>Delete account</button>
         </div>
 
+        {currentUser?.role === 'admin' && (
+          <section className="admin-panel">
+            <div className="admin-panel-heading">
+              <h4>Admin users</h4>
+              <button className="refresh-button" onClick={fetchAdminUsers} title="Refresh users">↻</button>
+            </div>
+            {adminUsers.length === 0 ? <p className="muted-text">No registered users</p> : adminUsers.map((user) => (
+              <div className="admin-user-row" key={user._id}>
+                <div>
+                  <strong>{user.displayName}</strong>
+                  <span>@{user.username}</span>
+                </div>
+                <button className="admin-delete-button" onClick={() => handleAdminDeleteUser(user._id)} title={`Delete ${user.username}`}>×</button>
+              </div>
+            ))}
+          </section>
+        )}
+
         <div className="search-box">
           <input
             type="text"
@@ -1135,6 +1260,19 @@ function App() {
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
           />
+        </div>
+
+        <div className="group-section">
+          <div className="section-heading">
+            <h4>Group chats</h4>
+            <button className="create-group-button" onClick={createGroup}>＋</button>
+          </div>
+          {groups.map((group) => (
+            <button key={group._id} className="group-row" onClick={() => openChat({ ...group, isGroup: true })}>
+              <span className="group-avatar">{group.name?.[0]?.toUpperCase() || 'G'}</span>
+              <span>{group.name}</span>
+            </button>
+          ))}
         </div>
 
         <div className="friend-section">
@@ -1200,17 +1338,17 @@ function App() {
                 >
                   ←
                 </button>
-                {selectedUser.avatar ? <img src={selectedUser.avatar} alt="" className="avatar small avatar-image" /> : <div className="avatar small">{selectedUser.displayName?.[0]?.toUpperCase() || 'U'}</div>}
+                {selectedUser.isGroup ? <div className="avatar small group-avatar">{selectedUser.name?.[0]?.toUpperCase() || 'G'}</div> : selectedUser.avatar ? <img src={selectedUser.avatar} alt="" className="avatar small avatar-image" /> : <div className="avatar small">{selectedUser.displayName?.[0]?.toUpperCase() || 'U'}</div>}
                 <div>
-                  <h3>{selectedUser.displayName}</h3>
-                  <p><span className={selectedUser.online ? 'online-dot' : 'offline-dot'} /> {selectedUser.online ? 'Online' : 'Offline'}</p>
+                  <h3>{selectedUser.isGroup ? selectedUser.name : selectedUser.displayName}</h3>
+                  <p>{selectedUser.isGroup ? `${selectedUser.memberIds?.length || 0} members` : <><span className={selectedUser.online ? 'online-dot' : 'offline-dot'} /> {selectedUser.online ? 'Online' : 'Offline'}</>}</p>
                 </div>
               </div>
 
-              <div className="chat-actions">
+              {!selectedUser.isGroup && <div className="chat-actions">
                 <button className="icon-button" aria-label="Start video call" title="Video call" onClick={() => startCall(selectedUser, 'video')}>📹</button>
                 <button className="icon-button" aria-label="Start voice call" title="Voice call" onClick={() => startCall(selectedUser, 'audio')}>📞</button>
-              </div>
+              </div>}
             </header>
 
             {(callState.status !== 'idle' || localStream || remoteStream) && (
