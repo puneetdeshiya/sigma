@@ -564,6 +564,40 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
   }
 });
 
+app.patch('/api/auth/me', authMiddleware, async (req, res) => {
+  try {
+    const user = await getUserById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
+
+    const displayName = normalizeText(req.body.displayName).slice(0, 80);
+    const profile = normalizeText(req.body.profile).slice(0, 500);
+    const avatar = typeof req.body.avatar === 'string' && req.body.avatar.startsWith('data:image/')
+      ? req.body.avatar.slice(0, 500000)
+      : '';
+
+    if (!displayName) {
+      return res.status(400).json({ message: 'Display name is required.' });
+    }
+
+    user.displayName = displayName;
+    user.profile = profile;
+    user.avatar = avatar;
+
+    if (mongoReady) {
+      await user.save();
+    } else {
+      memoryUsers.set(String(user._id), user);
+    }
+
+    res.json({ user: sanitizeUser(user.toObject ? user.toObject() : user) });
+  } catch (error) {
+    console.error('Update profile error:', error);
+    res.status(500).json({ message: 'Unable to update profile.' });
+  }
+});
+
 app.delete('/api/auth/me', authMiddleware, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -684,6 +718,17 @@ app.post('/api/friends/request', authMiddleware, async (req, res) => {
       });
     }
 
+    const senderSocketId = onlineUsers.get(String(currentUserId))?.socketId;
+    const receiverSocketId = onlineUsers.get(String(targetUserId))?.socketId;
+
+    if (senderSocketId) {
+      io.to(senderSocketId).emit('friends:update', { type: 'request' });
+    }
+
+    if (receiverSocketId) {
+      io.to(receiverSocketId).emit('friends:update', { type: 'request' });
+    }
+
     res.status(201).json({ message: 'Friend request sent.' });
   } catch (error) {
     console.error('Send friend request error:', error);
@@ -696,8 +741,10 @@ app.post('/api/friends/accept', authMiddleware, async (req, res) => {
     const { requestId } = req.body;
     const currentUserId = req.user.id;
 
+    let request;
+
     if (mongoReady) {
-      const request = await FriendRequest.findById(requestId);
+      request = await FriendRequest.findById(requestId);
       if (!request) {
         return res.status(404).json({ message: 'Friend request not found.' });
       }
@@ -709,7 +756,7 @@ app.post('/api/friends/accept', authMiddleware, async (req, res) => {
       request.status = 'accepted';
       await request.save();
     } else {
-      const request = memoryFriendRequests.find((item) => String(item._id) === String(requestId));
+      request = memoryFriendRequests.find((item) => String(item._id) === String(requestId));
       if (!request) {
         return res.status(404).json({ message: 'Friend request not found.' });
       }
@@ -719,6 +766,17 @@ app.post('/api/friends/accept', authMiddleware, async (req, res) => {
       }
 
       request.status = 'accepted';
+    }
+
+    const senderSocketId = onlineUsers.get(String(request.senderId))?.socketId;
+    const receiverSocketId = onlineUsers.get(String(request.receiverId))?.socketId;
+
+    if (senderSocketId) {
+      io.to(senderSocketId).emit('friends:update', { type: 'accept' });
+    }
+
+    if (receiverSocketId) {
+      io.to(receiverSocketId).emit('friends:update', { type: 'accept' });
     }
 
     res.json({ message: 'Friend request accepted.' });
@@ -806,6 +864,17 @@ io.on('connection', (socket) => {
     });
   });
 
+  socket.on('chat:close', ({ targetUserId }) => {
+    if (!targetUserId) return;
+
+    const conversationKey = [userId, targetUserId].sort().join(':');
+    activeChats.delete(conversationKey);
+
+    const typingList = activeTypingUsers.get(String(userId)) || [];
+    const updatedTypingList = typingList.filter((id) => id !== targetUserId);
+    activeTypingUsers.set(String(userId), updatedTypingList);
+  });
+
   socket.on('call:offer', ({ receiverId, offer, callType }) => {
     if (!receiverId || !offer) return;
 
@@ -857,19 +926,22 @@ io.on('connection', (socket) => {
     });
   });
 
-  socket.on('message:send', async ({ receiverId, message }) => {
+  socket.on('message:send', async ({ receiverId, message, type }) => {
     if (!receiverId || !message) {
       socket.emit('error', { message: 'Message cannot be empty.' });
       return;
     }
 
-    const sanitizedText = normalizeText(message);
+    const rawMessage = typeof message === 'string' ? message : '';
+    const isImage = type === 'image' || rawMessage.startsWith('data:image/');
+    const sanitizedText = isImage ? rawMessage : normalizeText(rawMessage);
+
     if (!sanitizedText) {
       socket.emit('error', { message: 'Message cannot be empty.' });
       return;
     }
 
-    if (sanitizedText.length > 2000) {
+    if (!isImage && sanitizedText.length > 2000) {
       socket.emit('error', { message: 'Message too long. Maximum 2000 characters.' });
       return;
     }
@@ -892,6 +964,7 @@ io.on('connection', (socket) => {
       senderId: userId,
       receiverId,
       text: sanitizedText,
+      type: isImage ? 'image' : 'text',
       timestamp: new Date().toISOString()
     };
 
@@ -952,6 +1025,11 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', async () => {
     await setUserOffline(userId);
+    for (const key of [...activeChats.keys()]) {
+      if (key.split(':').includes(String(userId))) {
+        activeChats.delete(key);
+      }
+    }
     const receiverTypingLists = [...activeTypingUsers.entries()];
     for (const [receiverId, typingList] of receiverTypingLists) {
       const updated = typingList.filter((id) => id !== userId);

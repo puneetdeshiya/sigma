@@ -71,6 +71,8 @@ function App() {
   const [conversationMap, setConversationMap] = useState({});
   const [typingUsers, setTypingUsers] = useState([]);
   const [isMobileChatOpen, setIsMobileChatOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settingsForm, setSettingsForm] = useState({ displayName: '', profile: '', avatar: '' });
   const [socketConnected, setSocketConnected] = useState(false);
   const [callState, setCallState] = useState({
     status: 'idle',
@@ -85,6 +87,9 @@ function App() {
   const localStreamRef = useRef(null);
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const settingsFileInputRef = useRef(null);
+  const messagesEndRef = useRef(null);
 
   const filteredUsers = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -98,6 +103,10 @@ function App() {
   }, [searchQuery, users]);
 
   const currentUser = authUser;
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }, [messages, typingUsers, selectedUser]);
 
   const stopStreamTracks = (stream) => {
     stream?.getTracks()?.forEach((track) => track.stop());
@@ -331,6 +340,11 @@ function App() {
 
     newSocket.on('typing:update', (payload) => {
       setTypingUsers(payload.typingUsers || []);
+    });
+
+    newSocket.on('friends:update', () => {
+      fetchUsers();
+      fetchFriends();
     });
 
     newSocket.on('chat:open', (payload) => {
@@ -607,6 +621,69 @@ function App() {
     }
   };
 
+  const openSettings = () => {
+    setSettingsForm({
+      displayName: currentUser?.displayName || '',
+      profile: currentUser?.profile || '',
+      avatar: currentUser?.avatar || ''
+    });
+    setIsSettingsOpen(true);
+  };
+
+  const handleProfileImageSelection = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      setErrors({ api: 'Please select an image file.' });
+      event.target.value = '';
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const image = new Image();
+      image.onload = () => {
+        const size = 320;
+        const canvas = document.createElement('canvas');
+        const scale = Math.min(size / image.width, size / image.height, 1);
+        canvas.width = Math.max(1, Math.round(image.width * scale));
+        canvas.height = Math.max(1, Math.round(image.height * scale));
+        canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+        setSettingsForm((prev) => ({
+          ...prev,
+          avatar: canvas.toDataURL('image/jpeg', 0.82)
+        }));
+      };
+      image.src = String(reader.result);
+    };
+    reader.readAsDataURL(file);
+    event.target.value = '';
+  };
+
+  const handleSaveSettings = async (event) => {
+    event.preventDefault();
+    try {
+      const response = await fetch(`${API_URL}/api/auth/me`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify(settingsForm)
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message || 'Unable to update profile.');
+
+      setAuthUser(data.user);
+      setUserForSession(data.user);
+      setUsers((prev) => prev.map((user) => user._id === data.user._id ? data.user : user));
+      setIsSettingsOpen(false);
+    } catch (error) {
+      setErrors({ api: error.message || 'Unable to update profile.' });
+    }
+  };
+
   const openChat = (user) => {
     if (!isFriend(user._id)) {
       setErrors({ api: 'Chat is only available with accepted friends.' });
@@ -622,26 +699,90 @@ function App() {
     }
   };
 
-  const handleSendMessage = () => {
-    const trimmed = messageText.trim();
-    if (!trimmed || !selectedUser || !socketRef.current) return;
+  const closeChat = () => {
+    if (selectedUser && socketRef.current) {
+      socketRef.current.emit('chat:close', { targetUserId: selectedUser._id });
+    }
+
+    setSelectedUser(null);
+    setMessages([]);
+    setTypingUsers([]);
+    setIsMobileChatOpen(false);
+    setConversationMap((prev) => {
+      if (!selectedUser) return prev;
+      const next = { ...prev };
+      delete next[selectedUser._id];
+      return next;
+    });
+  };
+
+  const sendMessage = (content, type = 'text') => {
+    if (!selectedUser || !socketRef.current) return;
 
     if (!isFriend(selectedUser._id)) {
       setErrors({ api: 'Chat is only available with accepted friends.' });
       return;
     }
 
-    const safeMessage = sanitizeText(trimmed).slice(0, 2000);
+    const trimmed = typeof content === 'string' ? content.trim() : '';
+    if (!trimmed && type !== 'image') return;
+
+    const tempMessage = {
+      temporaryId: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      senderId: currentUser?._id,
+      receiverId: selectedUser._id,
+      text: type === 'image' ? content : sanitizeText(trimmed).slice(0, 2000),
+      type,
+      timestamp: new Date().toISOString()
+    };
+
+    setConversationMap((prev) => {
+      const existing = prev[selectedUser._id] || [];
+      const alreadyExists = existing.some((item) => item.temporaryId === tempMessage.temporaryId);
+      if (alreadyExists) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        [selectedUser._id]: [...existing, tempMessage]
+      };
+    });
 
     socketRef.current.emit('message:send', {
       receiverId: selectedUser._id,
-      message: safeMessage
+      message: type === 'image' ? content : sanitizeText(trimmed).slice(0, 2000),
+      type
     });
 
     setMessageText('');
     socketRef.current.emit('typing:stop', {
       receiverId: selectedUser._id
     });
+  };
+
+  const handleSendMessage = () => {
+    const trimmed = messageText.trim();
+    if (!trimmed) return;
+    sendMessage(trimmed, 'text');
+  };
+
+  const handleImageSelection = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      setErrors({ api: 'Please select an image file.' });
+      event.target.value = '';
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      sendMessage(String(reader.result), 'image');
+      event.target.value = '';
+    };
+    reader.readAsDataURL(file);
   };
 
   const handleTyping = (value) => {
@@ -663,9 +804,9 @@ function App() {
     <div className="auth-shell">
       <div className="auth-card">
         <div className="brand-row">
-          <div className="brand-badge">C</div>
+          <div className="brand-badge">Σ</div>
           <div>
-            <h1>ChatFlow</h1>
+            <h1>Sigma</h1>
             <p>Simple real-time messaging</p>
           </div>
         </div>
@@ -774,23 +915,26 @@ function App() {
       <aside className={`sidebar ${isMobileChatOpen ? 'sidebar-hidden' : ''}`}>
         <div className="sidebar-header">
           <div className="brand-row">
-            <div className="brand-badge">C</div>
+            <div className="brand-badge">Σ</div>
             <div>
-              <h2>ChatFlow</h2>
+              <h2>Sigma</h2>
             </div>
           </div>
           <button className="ghost-button" onClick={handleLogout}>Logout</button>
         </div>
 
         <div className="profile-card">
-          <div className="avatar">{currentUser?.displayName?.[0]?.toUpperCase() || 'U'}</div>
+          {currentUser?.avatar ? <img src={currentUser.avatar} alt="Your profile" className="avatar avatar-image" /> : <div className="avatar">{currentUser?.displayName?.[0]?.toUpperCase() || 'U'}</div>}
           <div>
             <strong>{currentUser?.displayName}</strong>
             <p>@{currentUser?.username}</p>
           </div>
         </div>
 
-        <button className="danger-button" onClick={handleDeleteAccount}>Delete Account</button>
+        <div className="sidebar-tools">
+          <button className="settings-button" onClick={openSettings}>⚙ <span>Settings</span></button>
+          <button className="danger-button" onClick={handleDeleteAccount}>Delete account</button>
+        </div>
 
         <div className="search-box">
           <input
@@ -826,11 +970,11 @@ function App() {
             return (
               <div key={user._id} className={`user-row ${selectedUser?._id === user._id ? 'active' : ''}`}>
                 <button className="user-button" onClick={() => openChat(user)}>
-                  <div className="avatar small">{user.displayName?.[0]?.toUpperCase() || 'U'}</div>
+                  {user.avatar ? <img src={user.avatar} alt="" className="avatar small avatar-image" /> : <div className="avatar small">{user.displayName?.[0]?.toUpperCase() || 'U'}</div>}
                   <div className="user-info">
                     <div className="row">
                       <strong>{user.displayName}</strong>
-                      {user.online ? <span className="online-dot" /> : <span className="offline-dot" />}
+                      <span className={user.online ? 'online-dot' : 'offline-dot'} title={user.online ? 'Online' : 'Offline'} />
                     </div>
                     <span>@{user.username}</span>
                   </div>
@@ -849,6 +993,8 @@ function App() {
             );
           })}
         </div>
+
+        <footer className="app-footer">Developed by <strong>Sigma</strong></footer>
       </aside>
 
       <main className={`chat-panel ${isMobileChatOpen ? 'chat-open' : ''}`}>
@@ -858,20 +1004,20 @@ function App() {
               <div className="chat-header-left">
                 <button
                   className="back-button"
-                  onClick={() => setIsMobileChatOpen(false)}
+                  onClick={closeChat}
                 >
                   ←
                 </button>
-                <div className="avatar small">{selectedUser.displayName?.[0]?.toUpperCase() || 'U'}</div>
+                {selectedUser.avatar ? <img src={selectedUser.avatar} alt="" className="avatar small avatar-image" /> : <div className="avatar small">{selectedUser.displayName?.[0]?.toUpperCase() || 'U'}</div>}
                 <div>
                   <h3>{selectedUser.displayName}</h3>
-                  <p>{selectedUser.online ? 'Online' : 'Offline'}</p>
+                  <p><span className={selectedUser.online ? 'online-dot' : 'offline-dot'} /> {selectedUser.online ? 'Online' : 'Offline'}</p>
                 </div>
               </div>
 
               <div className="chat-actions">
-                <button className="small-button" onClick={() => startCall(selectedUser, 'video')}>🎥 Video Call</button>
-                <button className="small-button" onClick={() => startCall(selectedUser, 'audio')}>📞 Call</button>
+                <button className="icon-button" aria-label="Start video call" title="Video call" onClick={() => startCall(selectedUser, 'video')}>▣</button>
+                <button className="icon-button" aria-label="Start voice call" title="Voice call" onClick={() => startCall(selectedUser, 'audio')}>◉</button>
               </div>
             </header>
 
@@ -910,15 +1056,21 @@ function App() {
             <div className="messages">
               {messages.map((msg) => {
                 const isMine = msg.senderId === currentUser?._id;
+                const isImage = msg.type === 'image' || msg.text?.startsWith('data:image/');
                 return (
                   <div key={msg.temporaryId || msg.timestamp} className={`message-row ${isMine ? 'mine' : ''}`}>
                     <div className="message-bubble">
-                      <p>{msg.text}</p>
+                      {isImage ? (
+                        <img src={msg.text} alt="Shared chat media" className="message-image" />
+                      ) : (
+                        <p>{msg.text}</p>
+                      )}
                       <small>{formatTime(msg.timestamp)}</small>
                     </div>
                   </div>
                 );
               })}
+              <div ref={messagesEndRef} aria-hidden="true" />
             </div>
 
             <div className="typing-row">
@@ -928,6 +1080,14 @@ function App() {
             </div>
 
             <div className="composer">
+              <input
+                type="file"
+                accept="image/*"
+                ref={fileInputRef}
+                onChange={handleImageSelection}
+                hidden
+              />
+              <button className="upload-button" aria-label="Share photo" title="Share photo" onClick={() => fileInputRef.current?.click()}>▧</button>
               <input
                 type="text"
                 placeholder="Type a message"
@@ -939,8 +1099,9 @@ function App() {
                   }
                 }}
               />
-              <button onClick={handleSendMessage}>Send</button>
+              <button className="send-button" aria-label="Send message" title="Send message" onClick={handleSendMessage}>➤</button>
             </div>
+
           </>
         ) : (
           <div className="empty-chat">
@@ -948,6 +1109,28 @@ function App() {
           </div>
         )}
       </main>
+
+      {isSettingsOpen && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setIsSettingsOpen(false)}>
+          <form className="settings-modal" onSubmit={handleSaveSettings}>
+            <div className="settings-heading">
+              <div>
+                <span className="eyebrow">Account</span>
+                <h2>Settings</h2>
+              </div>
+              <button type="button" className="modal-close" aria-label="Close settings" onClick={() => setIsSettingsOpen(false)}>×</button>
+            </div>
+            <div className="settings-avatar-wrap">
+              {settingsForm.avatar ? <img src={settingsForm.avatar} alt="Profile preview" className="settings-avatar avatar-image" /> : <div className="settings-avatar">{settingsForm.displayName?.[0]?.toUpperCase() || 'U'}</div>}
+              <input type="file" accept="image/*" ref={settingsFileInputRef} onChange={handleProfileImageSelection} hidden />
+              <button type="button" className="ghost-button" onClick={() => settingsFileInputRef.current?.click()}>Change photo</button>
+            </div>
+            <label>Display name<input value={settingsForm.displayName} onChange={(event) => setSettingsForm({ ...settingsForm, displayName: event.target.value })} /></label>
+            <label>Profile bio<textarea rows="3" value={settingsForm.profile} onChange={(event) => setSettingsForm({ ...settingsForm, profile: event.target.value })} /></label>
+            <button className="save-settings-button" type="submit">Save changes</button>
+          </form>
+        </div>
+      )}
     </div>
   );
 
