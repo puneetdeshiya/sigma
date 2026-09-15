@@ -14,9 +14,11 @@ dotenv.config({ path: require('path').resolve(__dirname, '../.env') });
 
 const app = express();
 const server = http.createServer(app);
+const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:5173';
+const configuredOrigins = CLIENT_URL.split(',').map((origin) => origin.trim()).filter(Boolean);
 const allowedOrigins = (origin) => {
   if (!origin) return true;
-  return /^https?:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin);
+  return configuredOrigins.includes(origin) || /^https?:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin);
 };
 
 const io = new Server(server, {
@@ -37,7 +39,6 @@ const io = new Server(server, {
 const PORT = process.env.PORT || 5000;
 const MONGODB_URI = process.env.MONGODB_URI;
 const JWT_SECRET = process.env.JWT_SECRET;
-const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:5173';
 
 if (!MONGODB_URI || !JWT_SECRET) {
   console.error('Missing required environment variables. Check your .env file.');
