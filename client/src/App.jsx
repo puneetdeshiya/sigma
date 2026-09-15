@@ -295,6 +295,7 @@ function App() {
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
         setErrors({ api: 'Call connection failed. Check microphone/camera permission and network access.' });
+        notifyCallHangup();
         cleanupCallSession();
       }
 
@@ -304,6 +305,12 @@ function App() {
           status: 'connected',
           startedAt: previous.startedAt || Date.now()
         }));
+        if (socketRef.current) {
+          socketRef.current.emit('call:connected', {
+            receiverId: remoteUserId,
+            callId: callIdRef.current
+          });
+        }
       }
     };
 
@@ -393,16 +400,34 @@ function App() {
     }
   };
 
-  const hangUpCall = () => {
-    if (socketRef.current && callState.remoteUser?._id) {
+  const notifyCallHangup = () => {
+    const remoteUserId = callState.remoteUser?._id || callState.incomingCall?.fromUserId;
+    if (socketRef.current && remoteUserId) {
       socketRef.current.emit('call:hangup', {
-        receiverId: callState.remoteUser._id,
-        callId: callState.callId
+        receiverId: remoteUserId,
+        callId: callState.callId || callState.incomingCall?.callId
       });
     }
+  };
 
+  const hangUpCall = () => {
+    notifyCallHangup();
     cleanupCallSession();
   };
+
+  const declineIncomingCall = () => {
+    notifyCallHangup();
+    cleanupCallSession();
+  };
+
+  useEffect(() => {
+    const handlePageExit = () => {
+      notifyCallHangup();
+    };
+
+    window.addEventListener('beforeunload', handlePageExit);
+    return () => window.removeEventListener('beforeunload', handlePageExit);
+  }, [callState.callId, callState.remoteUser, callState.incomingCall]);
 
   useEffect(() => {
     const verifySession = async () => {
@@ -543,6 +568,15 @@ function App() {
       } catch (error) {
         setErrors({ api: 'Unable to connect the call.' });
       }
+    });
+
+    newSocket.on('call:connected', (payload) => {
+      if (payload.callId && payload.callId !== callIdRef.current) return;
+      setCallState((previous) => ({
+        ...previous,
+        status: 'connected',
+        startedAt: previous.startedAt || Date.now()
+      }));
     });
 
     newSocket.on('call:ice-candidate', async (payload) => {
@@ -1274,7 +1308,7 @@ function App() {
             <h2>{callState.remoteUser?.displayName || 'Unknown caller'}</h2>
             <p>{callState.type === 'video' ? 'Video call' : 'Voice call'} is ringing</p>
             <div className="incoming-call-actions">
-              <button className="call-decline-button" onClick={cleanupCallSession}>✕</button>
+              <button className="call-decline-button" onClick={declineIncomingCall}>✕</button>
               <button className="call-accept-button" onClick={acceptIncomingCall}>☎</button>
             </div>
           </div>
