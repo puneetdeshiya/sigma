@@ -36,6 +36,12 @@ const formatTime = (timestamp) => {
   });
 };
 
+const formatCallDuration = (seconds) => {
+  const minutes = Math.floor(seconds / 60).toString().padStart(2, '0');
+  const remainder = (seconds % 60).toString().padStart(2, '0');
+  return `${minutes}:${remainder}`;
+};
+
 const initialForms = {
   login: {
     username: '',
@@ -78,8 +84,11 @@ function App() {
     status: 'idle',
     remoteUser: null,
     incomingCall: null,
-    type: 'audio'
+    type: 'audio',
+    callId: null,
+    startedAt: null
   });
+  const [callDuration, setCallDuration] = useState(0);
   const [localStream, setLocalStream] = useState(null);
   const [remoteStream, setRemoteStream] = useState(null);
   const pendingIceCandidatesRef = useRef([]);
@@ -113,6 +122,19 @@ function App() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [messages, typingUsers, selectedUser]);
+
+  useEffect(() => {
+    if (callState.status !== 'connected' || !callState.startedAt) {
+      return undefined;
+    }
+
+    const updateDuration = () => {
+      setCallDuration(Math.max(0, Math.floor((Date.now() - callState.startedAt) / 1000)));
+    };
+    updateDuration();
+    const timer = window.setInterval(updateDuration, 1000);
+    return () => window.clearInterval(timer);
+  }, [callState.status, callState.startedAt]);
 
   const stopIncomingAlert = () => {
     if (ringtoneTimerRef.current) {
@@ -193,13 +215,36 @@ function App() {
 
     setLocalStream(null);
     setRemoteStream(null);
+    setCallDuration(0);
     pendingIceCandidatesRef.current = [];
     setCallState({
       status: 'idle',
       remoteUser: null,
       incomingCall: null,
       type: 'audio',
-      callId: null
+      callId: null,
+      startedAt: null
+    });
+  };
+
+  const waitForIceGathering = (peerConnection) => {
+    if (peerConnection.iceGatheringState === 'complete') {
+      return Promise.resolve();
+    }
+
+    return new Promise((resolve) => {
+      const timeout = window.setTimeout(() => {
+        peerConnection.removeEventListener('icegatheringstatechange', handleStateChange);
+        resolve();
+      }, 4000);
+      const handleStateChange = () => {
+        if (peerConnection.iceGatheringState === 'complete') {
+          window.clearTimeout(timeout);
+          peerConnection.removeEventListener('icegatheringstatechange', handleStateChange);
+          resolve();
+        }
+      };
+      peerConnection.addEventListener('icegatheringstatechange', handleStateChange);
     });
   };
 
@@ -252,6 +297,14 @@ function App() {
         setErrors({ api: 'Call connection failed. Check microphone/camera permission and network access.' });
         cleanupCallSession();
       }
+
+      if (pc.connectionState === 'connected') {
+        setCallState((previous) => ({
+          ...previous,
+          status: 'connected',
+          startedAt: previous.startedAt || Date.now()
+        }));
+      }
     };
 
     pc.oniceconnectionstatechange = () => {
@@ -281,11 +334,13 @@ function App() {
         remoteUser: user,
         incomingCall: null,
         type: callType,
-        callId
+        callId,
+        startedAt: null
       });
 
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
+      await waitForIceGathering(pc);
 
       socketRef.current.emit('call:offer', {
         receiverId: user._id,
@@ -313,7 +368,8 @@ function App() {
         remoteUser: incomingCall.fromUser,
         incomingCall: null,
         type: incomingCall.callType,
-        callId: incomingCall.callId
+        callId: incomingCall.callId,
+        startedAt: null
       });
 
       await pc.setRemoteDescription(new RTCSessionDescription(incomingCall.offer));
@@ -323,6 +379,7 @@ function App() {
       pendingIceCandidatesRef.current = [];
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
+      await waitForIceGathering(pc);
 
       socketRef.current.emit('call:answer', {
         receiverId: incomingCall.fromUserId,
@@ -468,7 +525,8 @@ function App() {
         remoteUser: payload.fromUser,
         incomingCall: payload,
         type: payload.callType || 'audio',
-        callId: payload.callId || null
+        callId: payload.callId || null,
+        startedAt: null
       });
     });
 
@@ -481,7 +539,7 @@ function App() {
           await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(candidate));
         }
         pendingIceCandidatesRef.current = [];
-        setCallState((prev) => ({ ...prev, status: 'connected' }));
+        setCallState((prev) => ({ ...prev, status: 'connecting' }));
       } catch (error) {
         setErrors({ api: 'Unable to connect the call.' });
       }
@@ -1125,23 +1183,23 @@ function App() {
               <div className={`call-panel ${callState.type === 'video' ? 'video-call-stage' : 'audio-call-stage'}`}>
                 <div className="video-grid">
                   {callState.type === 'video' && (
+                    <div className="video-box remote-video-box">
+                      {remoteStream ? <video ref={remoteVideoRef} autoPlay playsInline /> : <div className="video-placeholder">{callState.status === 'connected' ? 'Connecting video...' : 'Waiting for answer...'}</div>}
+                      <span>{callState.remoteUser?.displayName || 'Remote User'}</span>
+                    </div>
+                  )}
+                  {callState.type === 'video' && localStream && (
                     <div className="video-box local-video-box">
                       <video ref={localVideoRef} autoPlay muted playsInline />
                       <span>You</span>
                     </div>
                   )}
                   <audio ref={remoteAudioRef} autoPlay />
-                  {callState.type === 'video' && remoteStream && (
-                    <div className="video-box">
-                      <video ref={remoteVideoRef} autoPlay playsInline />
-                      <span>{callState.remoteUser?.displayName || 'Remote User'}</span>
-                    </div>
-                  )}
                   {callState.type === 'audio' && (
                     <div className="audio-call-details">
                       <div className="call-avatar">{callState.remoteUser?.displayName?.[0]?.toUpperCase() || 'U'}</div>
                       <strong>{callState.remoteUser?.displayName || 'Contact'}</strong>
-                      <span>{callState.status === 'calling' ? 'Calling...' : callState.status === 'connected' ? 'Connected' : 'Connecting...'}</span>
+                      <span>{callState.status === 'connected' ? formatCallDuration(callDuration) : callState.status === 'calling' ? 'Calling...' : 'Connecting...'}</span>
                     </div>
                   )}
                 </div>
