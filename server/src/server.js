@@ -452,6 +452,10 @@ app.get('/health', (req, res) => {
   res.json({ ok: true, mongoReady });
 });
 
+app.get('/', (req, res) => {
+  res.json({ service: 'Sigma backend', ok: true, mongoReady });
+});
+
 app.post('/api/auth/signup', authLimiter, async (req, res) => {
   try {
     const { username, displayName, password, confirmPassword, email, profile } = req.body;
